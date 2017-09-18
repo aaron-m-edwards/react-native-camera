@@ -42,6 +42,8 @@ class RCTCameraViewFinder extends TextureView implements TextureView.SurfaceText
     private boolean _isStopping;
     private Camera _camera;
     private float mFingerSpacing;
+    private long _barcodeScanTime = 2000;
+    private Result _lastBarcode;
 
     // concurrency lock for barcode scanner to avoid flooding the runtime
     public static volatile boolean barcodeScannerTaskLock = false;
@@ -300,6 +302,12 @@ class RCTCameraViewFinder extends TextureView implements TextureView.SurfaceText
             this.imageData = imageData;
         }
 
+        private boolean isNewBarcode(Result newBarcode) {
+            return _lastBarcode == null ||
+                    ! newBarcode.getText().equals(_lastBarcode.getText()) ||
+                    (newBarcode.getTimestamp() - _lastBarcode.getTimestamp()) > _barcodeScanTime;
+        }
+
         @Override
         protected Void doInBackground(Void... ignored) {
             if (isCancelled()) {
@@ -329,23 +337,27 @@ class RCTCameraViewFinder extends TextureView implements TextureView.SurfaceText
                 BinaryBitmap bitmap = new BinaryBitmap(new HybridBinarizer(source));
                 Result result = _multiFormatReader.decodeWithState(bitmap);
 
-                ReactContext reactContext = RCTCameraModule.getReactContextSingleton();
-                WritableMap event = Arguments.createMap();
-                WritableArray resultPoints = Arguments.createArray();
-                ResultPoint[] points = result.getResultPoints();
-                if(points != null) {
-                    for (ResultPoint point : points) {
-                        WritableMap newPoint = Arguments.createMap();
-                        newPoint.putString("x", String.valueOf(point.getX()));
-                        newPoint.putString("y", String.valueOf(point.getY()));
-                        resultPoints.pushMap(newPoint);
+                if(isNewBarcode(result)) {
+                    ReactContext reactContext = RCTCameraModule.getReactContextSingleton();
+                    WritableMap event = Arguments.createMap();
+                    WritableArray resultPoints = Arguments.createArray();
+                    ResultPoint[] points = result.getResultPoints();
+                    if (points != null) {
+                        for (ResultPoint point : points) {
+                            WritableMap newPoint = Arguments.createMap();
+                            newPoint.putString("x", String.valueOf(point.getX()));
+                            newPoint.putString("y", String.valueOf(point.getY()));
+                            resultPoints.pushMap(newPoint);
+                        }
                     }
+
+                    event.putArray("bounds", resultPoints);
+                    event.putString("data", result.getText());
+                    event.putString("type", result.getBarcodeFormat().toString());
+                    reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit("CameraBarCodeReadAndroid", event);
                 }
 
-                event.putArray("bounds", resultPoints);
-                event.putString("data", result.getText());
-                event.putString("type", result.getBarcodeFormat().toString());
-                reactContext.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class).emit("CameraBarCodeReadAndroid", event);
+                _lastBarcode = result;
 
             } catch (Throwable t) {
                 // meh
